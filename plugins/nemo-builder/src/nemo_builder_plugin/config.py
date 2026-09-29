@@ -122,6 +122,30 @@ class BuilderConfig(NemoConfig):
             "every submit."
         ),
     )
+    signing_key: str | None = Field(
+        default=None,
+        description=(
+            "PEM file of the private key the builder signs with, which must match `signing_public_key`. "
+            "No build step can read it. Unset refuses every submit."
+        ),
+    )
+    signing_key_password_file: str | None = Field(
+        default=None, description="The signing key's password, if its PEM is encrypted."
+    )
+    registry_username: str | None = Field(
+        default=None,
+        description=(
+            "The username the builder presents to the registry's token service, which issues each push "
+            "step its scoped tokens. Unset refuses every submit."
+        ),
+    )
+    registry_password_file: str | None = Field(
+        default=None,
+        description=(
+            "The builder's password for the registry's token service: a mounted Secret, or a projected "
+            "ServiceAccount token. Read on every use, so it may rotate. Unset refuses every submit."
+        ),
+    )
 
     @field_validator("signing_public_key")
     @classmethod

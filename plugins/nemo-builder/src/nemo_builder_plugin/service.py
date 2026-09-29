@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import ClassVar, Literal
 
@@ -13,8 +14,22 @@ from nemo_builder_plugin._perms import BuildPerms, ContainerImagePerms
 from nemo_builder_plugin.authz import scope
 from nemo_builder_plugin.backend import BackendRefused
 from nemo_builder_plugin.backends import load_backend
+from nemo_builder_plugin.broker import (
+    AuditUnavailable,
+    Broker,
+    BrokerUnconfigured,
+    Caller,
+    CompleteRequest,
+    PushCredentials,
+    SigningFailed,
+    TagMoved,
+    current_caller,
+    load_broker,
+)
+from nemo_builder_plugin.completion import CompletionConflict, complete, settled
 from nemo_builder_plugin.config import BuilderConfig
 from nemo_builder_plugin.entities import ContainerImage
+from nemo_builder_plugin.registry_auth import RegistryAuthError
 from nemo_builder_plugin.schema import BuildSet
 from nemo_builder_plugin.submit import BuildConflict, InvalidBuildRequest, submit_build_set
 from nemo_helix import AsyncNeMoHelix
@@ -44,6 +59,21 @@ class SubmitBuildResponse(BaseModel):
     )
 
 
+def get_broker() -> Broker:
+    """The deployment's credential broker: 409 if it can't publish."""
+    try:
+        return load_broker(BuilderConfig.get())
+    except BrokerUnconfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _get_row(entity_client: NemoEntitiesClient, workspace: str, name: str) -> ContainerImage:
+    try:
+        return await entity_client.get(ContainerImage, name=name, workspace=workspace)
+    except NemoEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Container image '{name}' not found.") from exc
+
+
 class BuilderService(NemoService):
     name: ClassVar[str] = "builder"
     dependencies: ClassVar[list[str]] = ["entities", "jobs"]
@@ -62,7 +92,14 @@ class BuilderService(NemoService):
 def _build_router() -> APIRouter:
     router = APIRouter()
 
-    @router.post("/builds", response_model=SubmitBuildResponse, status_code=201, tags=["Builder"])
+    # A deployment that can't publish refuses here, rather than running builds nothing could complete.
+    @router.post(
+        "/builds",
+        response_model=SubmitBuildResponse,
+        status_code=201,
+        tags=["Builder"],
+        dependencies=[Depends(get_broker)],
+    )
     @scope.write
     @path_rule(callers=[CallerKind.PRINCIPAL], permissions=[BuildPerms.CREATE])
     async def submit_build(
@@ -153,5 +190,91 @@ def _build_router() -> APIRouter:
             return await entity_client.get(ContainerImage, name=name, workspace=workspace)
         except NemoEntityNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Container image '{name}' not found.") from exc
+
+    @router.post("/container-images/{name}/push-credentials", response_model=PushCredentials, tags=["Builder"])
+    @scope.write
+    @path_rule(callers=[CallerKind.PRINCIPAL], permissions=[ContainerImagePerms.COMPLETE])
+    async def get_push_credentials(
+        workspace: str,
+        name: str,
+        entity_client: NemoEntitiesClient = Depends(get_entity_client),
+        broker: Broker = Depends(get_broker),
+        caller: Caller = Depends(current_caller),
+    ) -> PushCredentials:
+        """A registry token for one `pending` image's repository: what the build's push step pushes with.
+
+        403 unless the caller is a job step acting for the image's submitter; 409 once the image has settled.
+        """
+        row = await _get_row(entity_client, workspace, name)
+        refusal = broker.refusal(row, caller)
+        if refusal is not None:
+            broker.refused(row, caller, "credentials", refusal)
+            raise HTTPException(status_code=403, detail=refusal)
+        if row.status != "pending":
+            raise HTTPException(status_code=409, detail=f"{name} is {row.status}; there is nothing left to publish.")
+        try:
+            return await asyncio.to_thread(broker.credentials, row, caller)
+        except RegistryAuthError as exc:
+            logger.error(
+                "credentials for %s/%s failed: %s",
+                sanitize_for_log(workspace),
+                sanitize_for_log(name),
+                sanitize_for_log(exc),
+            )
+            raise HTTPException(status_code=502, detail="The registry's token service failed or refused.") from exc
+        except AuditUnavailable as exc:
+            logger.exception(
+                "credentials for %s/%s withheld: no audit line", sanitize_for_log(workspace), sanitize_for_log(name)
+            )
+            raise HTTPException(status_code=503, detail="The audit log is unavailable.") from exc
+
+    @router.post("/container-images/{name}/complete", response_model=ContainerImage, tags=["Builder"])
+    @scope.write
+    @path_rule(callers=[CallerKind.PRINCIPAL], permissions=[ContainerImagePerms.COMPLETE])
+    async def complete_container_image(
+        workspace: str,
+        name: str,
+        body: CompleteRequest,
+        entity_client: NemoEntitiesClient = Depends(get_entity_client),
+        broker: Broker = Depends(get_broker),
+        caller: Caller = Depends(current_caller),
+    ) -> ContainerImage:
+        """Sign the digest the push step pushed, if the image's system tag still holds it, and make the image `ready`.
+
+        Completing an image already `ready` at that digest returns it; 409 if the tag moved or it settled otherwise.
+        """
+        row = await _get_row(entity_client, workspace, name)
+        refusal = broker.refusal(row, caller)
+        if refusal is not None:
+            broker.refused(row, caller, "sign", refusal)
+            raise HTTPException(status_code=403, detail=refusal)
+        try:
+            if settled(row, body.digest):
+                return row
+            signature = await asyncio.to_thread(broker.sign, row, body.digest, caller)
+            ready = await complete(
+                entity_client, workspace=workspace, name=name, digest=body.digest, signature=signature
+            )
+        except NemoEntityNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"Container image '{name}' not found.") from exc
+        except (TagMoved, CompletionConflict) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SigningFailed as exc:
+            logger.error(
+                "signing %s/%s failed: %s", sanitize_for_log(workspace), sanitize_for_log(name), sanitize_for_log(exc)
+            )
+            raise HTTPException(status_code=502, detail="Signing failed.") from exc
+        except AuditUnavailable as exc:
+            logger.exception(
+                "signature for %s/%s withheld: no audit line", sanitize_for_log(workspace), sanitize_for_log(name)
+            )
+            raise HTTPException(status_code=503, detail="The audit log is unavailable.") from exc
+        logger.info(
+            "image %s/%s ready: %s",
+            sanitize_for_log(workspace),
+            sanitize_for_log(name),
+            sanitize_for_log(ready.image_ref),
+        )
+        return ready
 
     return router
