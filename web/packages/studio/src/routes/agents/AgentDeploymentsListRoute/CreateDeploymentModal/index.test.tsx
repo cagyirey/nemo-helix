@@ -5,7 +5,10 @@ vi.hoisted(() => {
   vi.stubEnv('VITE_FF_AGENT_CONTAINER_DEPLOYMENTS_ENABLED', 'true');
 });
 
-import { getAgentsListDeploymentsQueryKey } from '@nemo/sdk/generated/agents/agent-deployments';
+import {
+  getAgentsListDeploymentModesQueryKey,
+  getAgentsListDeploymentsQueryKey,
+} from '@nemo/sdk/generated/agents/agent-deployments';
 import { PLATFORM_BASE_URL } from '@studio/constants/environment';
 import { workspace1 } from '@studio/mocks/entity-store/projects';
 import { server } from '@studio/mocks/node';
@@ -53,6 +56,20 @@ const captureCreate = (): { body?: CapturedDeployment } => {
   );
   return captured;
 };
+
+const modesUrl = `${PLATFORM_BASE_URL}${getAgentsListDeploymentModesQueryKey(':workspace')[0]}`;
+const serveModes = (enabled: { docker?: boolean; k8s?: boolean }) =>
+  server.use(
+    http.get(modesUrl, () =>
+      HttpResponse.json({
+        data: [
+          { mode: 'subprocess', enabled: true, requires_image: false },
+          { mode: 'docker', enabled: enabled.docker ?? true, requires_image: true },
+          { mode: 'k8s', enabled: enabled.k8s ?? true, requires_image: true },
+        ],
+      })
+    )
+  );
 
 const PACKAGED_IMAGE = 'nemo-agents/default/my-agent:1.0';
 
@@ -132,7 +149,7 @@ describe('CreateDeploymentModal', () => {
     renderModal();
 
     const dialog = await getDeploymentDialog();
-    await user.click(within(dialog).getByRole('combobox', { name: 'Runtime' }));
+    await user.click(await within(dialog).findByRole('combobox', { name: 'Runtime' }));
     await user.click(await screen.findByRole('option', { name: 'Docker' }));
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Container Image' }),
@@ -174,7 +191,7 @@ describe('CreateDeploymentModal', () => {
 
     // The accordion hides its content rather than unmounting it, so this is about
     // what the user can see, not what React rendered.
-    expect(within(dialog).getByRole('combobox', { name: 'Runtime' })).not.toBeVisible();
+    expect(await within(dialog).findByRole('combobox', { name: 'Runtime' })).not.toBeVisible();
 
     await user.click(within(dialog).getByText(/Show Advanced/));
 
@@ -207,7 +224,7 @@ describe('CreateDeploymentModal', () => {
     renderRoute(<Harness startImage={PACKAGED_IMAGE} />);
 
     const dialog = await getDeploymentDialog();
-    await user.clear(within(dialog).getByRole('textbox', { name: 'Container Image' }));
+    await user.clear(await within(dialog).findByRole('textbox', { name: 'Container Image' }));
     await user.click(screen.getByRole('button', { name: 'harness: close' }));
     await user.click(screen.getByRole('button', { name: 'harness: open' }));
 
@@ -232,11 +249,36 @@ describe('CreateDeploymentModal', () => {
     renderModal();
 
     const dialog = await getDeploymentDialog();
-    await user.click(within(dialog).getByRole('combobox', { name: 'Runtime' }));
+    await user.click(await within(dialog).findByRole('combobox', { name: 'Runtime' }));
     await user.click(await screen.findByRole('option', { name: 'Docker' }));
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }));
 
     expect(await within(dialog).findByText(/requires a container image/)).toBeInTheDocument();
+  });
+
+  it('offers only the runtimes the platform can run', async () => {
+    serveModes({ k8s: false });
+    const user = userEvent.setup();
+    renderModal();
+
+    const dialog = await getDeploymentDialog();
+    await user.click(await within(dialog).findByRole('combobox', { name: 'Runtime' }));
+
+    expect(await screen.findByRole('option', { name: 'Docker' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Kubernetes' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to subprocess when a packaged image arrives but Docker cannot run', async () => {
+    serveModes({ docker: false });
+    const user = userEvent.setup();
+    const captured = captureCreate();
+    renderModal(PACKAGED_IMAGE);
+
+    const dialog = await getDeploymentDialog();
+    await within(dialog).findByRole('combobox', { name: 'Runtime' });
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() => expect(captured.body).toEqual({ agent, deployment_mode: 'subprocess' }));
   });
 
   it('submits without an image so a configured default can apply', async () => {
@@ -245,7 +287,7 @@ describe('CreateDeploymentModal', () => {
     renderModal();
 
     const dialog = await getDeploymentDialog();
-    await user.click(within(dialog).getByRole('combobox', { name: 'Runtime' }));
+    await user.click(await within(dialog).findByRole('combobox', { name: 'Runtime' }));
     await user.click(await screen.findByRole('option', { name: 'Docker' }));
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }));
 

@@ -3,9 +3,14 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { getErrorMessage } from '@nemo/common/src/api/common/utils';
+import { ControlledCheckbox } from '@nemo/common/src/components/form/ControlledCheckbox';
 import { ControlledTextInput } from '@nemo/common/src/components/form/ControlledTextInput';
 import { FormModal } from '@nemo/common/src/components/FormModal';
 import { useToast } from '@nemo/common/src/providers/toast/useToast';
+import {
+  getAgentsListDeploymentsQueryKey,
+  useAgentsCreateDeployment,
+} from '@nemo/sdk/generated/agents/agent-deployments';
 import {
   getAgentsListAgentsQueryKey,
   useAgentsCreateAgent,
@@ -30,10 +35,16 @@ import { AgentSpecFilesetOrphanError } from '@studio/api/agents/agentSpecFileset
 import { useCreateAgentFromGitHub } from '@studio/api/agents/useCreateAgentFromGitHub';
 import { useCreateAgentFromUpload } from '@studio/api/agents/useCreateAgentFromUpload';
 import { CodingAgentPromptEditor } from '@studio/components/CodingAgentPromptEditor';
+import { DeploymentModeSelect } from '@studio/components/DeploymentModeSelect';
+import {
+  type DeploymentMode,
+  useDeploymentModes,
+} from '@studio/components/DeploymentModeSelect/useDeploymentModes';
 import { PLATFORM_BASE_URL } from '@studio/constants/environment';
 import { agentIntegrationPrompt } from '@studio/routes/agents/AgentDetailRoute/overview/codingAgentPrompts';
 import {
   AGENT_CONFIG_FILENAME,
+  UPLOAD_AGENT_FORM_DEFAULTS,
   uploadAgentFormSchema,
 } from '@studio/routes/agents/AgentsListRoute/NewAgentModal/const';
 import {
@@ -95,10 +106,33 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
   const [isSecretModalOpen, setSecretModalOpen] = useState(false);
   const [repoBlurred, setRepoBlurred] = useState(false);
   const [tracedAgent, setTracedAgent] = useState('');
+  // Set on submit, so an agent created from traces, which has no config to run, is never deployed.
+  const deployAfterCreate = useRef<DeploymentMode | null>(null);
+
+  // Toasts live on the hook, not on mutate(): navigating to the new agent unmounts this modal.
+  const { mutate: deployAgent } = useAgentsCreateDeployment({
+    mutation: {
+      onSuccess: (deployment) => {
+        toast.success(`Deploying agent "${deployment.agent}"`);
+        void queryClient.invalidateQueries({
+          queryKey: getAgentsListDeploymentsQueryKey(workspace),
+        });
+      },
+      onError: (error, { data }) => {
+        toast.error(
+          `Agent "${data.agent}" was created, but deploying it failed: ${getErrorMessage(error) || 'unknown error'}`
+        );
+      },
+    },
+  });
 
   const onAgentCreated = (agent: Agent) => {
     toast.success(`Agent "${agent.name}" created`);
     void queryClient.invalidateQueries({ queryKey: getAgentsListAgentsQueryKey(workspace) });
+    const deploymentMode = deployAfterCreate.current;
+    if (agent.name && deploymentMode) {
+      deployAgent({ workspace, data: { agent: agent.name, deployment_mode: deploymentMode } });
+    }
     resetAndClose();
     if (agent.name) navigate(getAgentDetailRoute(workspace, agent.name));
   };
@@ -131,12 +165,18 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
     formState: { errors },
   } = useForm({
     resolver: zodResolver(uploadAgentFormSchema),
-    defaultValues: { name: '', repoUrl: '', secretKey: '' },
+    defaultValues: UPLOAD_AGENT_FORM_DEFAULTS,
     disabled: isPending,
     mode: 'onChange',
   });
 
   const tracedAgents = useTraceAgentNames(workspace, open && tab === 'imported-traces');
+
+  // A new agent has no image yet, so only modes that need none can deploy it.
+  const { modes: deploymentModes, isLoading: isModesLoading } = useDeploymentModes(workspace, {
+    enabled: open,
+    canSupplyImage: false,
+  });
 
   const {
     mutateAsync: createTracedAgent,
@@ -155,6 +195,7 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
   const watchedName = useWatch({ control, name: 'name' });
   const watchedRepoUrl = useWatch({ control, name: 'repoUrl' });
   const watchedSecretKey = useWatch({ control, name: 'secretKey' });
+  const watchedDeploy = useWatch({ control, name: 'deploy' });
 
   // A repository is only a source once it parses; a half-typed URL must not enable submit.
   const parsedRepo = useMemo((): { source?: GitHubAgentSource; problem?: string } => {
@@ -176,7 +217,8 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
     resetMutation();
     resetRepoMutation();
     resetTracedMutation();
-    resetForm({ name: '', repoUrl: '', secretKey: '' });
+    resetForm(UPLOAD_AGENT_FORM_DEFAULTS);
+    deployAfterCreate.current = null;
     setEntries([]);
     setSourceLabel('');
     setSelectionError(undefined);
@@ -300,6 +342,7 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
   // Keyed on the active tab: the fileset has one source, and it is the one the user can see.
   const onSubmit: SubmitHandler<UploadAgentFormData> = async (formData) => {
     const name = formData.name.trim();
+    deployAfterCreate.current = formData.deploy ? formData.deploymentMode : null;
     try {
       if (onGitHubTab) {
         if (!repoSource) return;
@@ -324,6 +367,7 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
   // real agent; deploying or chatting with it still needs a config.
   const createFromTraces = async () => {
     if (!tracedAgent) return;
+    deployAfterCreate.current = null;
     await createTracedAgent({ workspace, data: { name: tracedAgent, config: {} } }).catch(() => {
       // Rendered through errorText.
     });
@@ -343,6 +387,22 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
         : undefined;
 
   const busy = isPending || isCreatingTraced;
+
+  const deployFields = (
+    <Stack gap="density-md">
+      <ControlledCheckbox
+        useControllerProps={{ control, name: 'deploy' }}
+        slotLabel="Deploy after creating"
+      />
+      {watchedDeploy && deploymentModes.length > 1 ? (
+        <DeploymentModeSelect
+          useControllerProps={{ control, name: 'deploymentMode' }}
+          modes={deploymentModes}
+          loading={isModesLoading}
+        />
+      ) : null}
+    </Stack>
+  );
 
   return (
     <>
@@ -430,6 +490,7 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
                 label="Name"
                 formFieldProps={{ slotError: errors.name?.message }}
               />
+              {deployFields}
             </Stack>
           </TabsContent>
 
@@ -467,6 +528,7 @@ export const NewAgentModal: FC<NewAgentModalProps> = ({ open, onClose, workspace
                 label="Name"
                 formFieldProps={{ slotError: errors.name?.message }}
               />
+              {deployFields}
             </Stack>
           </TabsContent>
 

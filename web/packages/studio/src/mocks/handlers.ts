@@ -716,6 +716,15 @@ export const handlers = [
       );
     }
   ),
+  http.get(`${PLATFORM_BASE_URL}/apis/agents/v2/workspaces/:workspace/deployment-modes`, () =>
+    HttpResponse.json({
+      data: [
+        { mode: 'subprocess', enabled: true, requires_image: false },
+        { mode: 'docker', enabled: true, requires_image: true },
+        { mode: 'k8s', enabled: true, requires_image: true },
+      ],
+    })
+  ),
   http.get(`${PLATFORM_BASE_URL}/apis/agents/v2/workspaces/:workspace/jobs/package`, () =>
     HttpResponse.json({ data: [], total: 0 })
   ),

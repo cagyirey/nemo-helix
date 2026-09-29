@@ -14,6 +14,8 @@ import {
 } from '@nemo/sdk/generated/agents/agent-deployments';
 import { useAgentsListAgents } from '@nemo/sdk/generated/agents/agents';
 import { Accordion, Stack } from '@nvidia/foundations-react-core';
+import { DeploymentModeSelect } from '@studio/components/DeploymentModeSelect';
+import { useDeploymentModes } from '@studio/components/DeploymentModeSelect/useDeploymentModes';
 import { AGENT_CONTAINER_DEPLOYMENTS_ENABLED } from '@studio/constants/environment';
 import { useQueryClient } from '@tanstack/react-query';
 import { type FC, useEffect, useRef, useState } from 'react';
@@ -100,6 +102,7 @@ export const CreateDeploymentModal: FC<CreateDeploymentModalProps> = ({
     control,
     reset: resetForm,
     handleSubmit,
+    setValue,
     watch,
     formState: { errors },
   } = useForm({
@@ -109,6 +112,18 @@ export const CreateDeploymentModal: FC<CreateDeploymentModalProps> = ({
     mode: 'onChange',
   });
   const deploymentMode = watch('deploymentMode');
+
+  const {
+    modes,
+    isLoading: isModesLoading,
+    isReady: isModesReady,
+  } = useDeploymentModes(workspace, { enabled: open, canSupplyImage: true });
+  const hasRuntimeChoice = modes.length > 1;
+
+  // The default is chosen before the platform's modes load; fall back once they do.
+  useEffect(() => {
+    if (isModesReady && !modes.includes(deploymentMode)) setValue('deploymentMode', 'subprocess');
+  }, [isModesReady, modes, deploymentMode, setValue]);
 
   // Opened when a packaged tag is prefilled, so it is not hidden behind a
   // disclosure the user never opened.
@@ -171,9 +186,9 @@ export const CreateDeploymentModal: FC<CreateDeploymentModalProps> = ({
         />
         {/* Subprocess covers the common case and needs nothing else. Runtime and image
             are the container path, so they sit behind a disclosure rather than in front
-            of everyone — and the whole section is absent when the platform refuses
-            container deployments, since there would be nothing advanced to choose. */}
-        {AGENT_CONTAINER_DEPLOYMENTS_ENABLED && (
+            of everyone — and the whole section is absent when the platform can run only
+            subprocess, since there would be nothing advanced to choose. */}
+        {hasRuntimeChoice && (
           <Accordion
             className="[&>div]:border-b-0"
             value={advancedOpen}
@@ -185,15 +200,11 @@ export const CreateDeploymentModal: FC<CreateDeploymentModalProps> = ({
                 slotTrigger: `${advancedOpen === 'advanced' ? 'Hide' : 'Show'} Advanced`,
                 slotContent: (
                   <Stack gap="density-lg" className="pt-density-md">
-                    <ControlledSelect
+                    <DeploymentModeSelect
                       useControllerProps={{ control, name: 'deploymentMode' }}
-                      items={[
-                        { value: 'subprocess', children: 'Subprocess' },
-                        { value: 'docker', children: 'Docker' },
-                        { value: 'k8s', children: 'Kubernetes' },
-                      ]}
+                      modes={modes}
+                      loading={isModesLoading}
                       formFieldProps={{
-                        slotLabel: 'Runtime',
                         slotInfo:
                           'Use Docker for a local container image or Kubernetes for a cluster deployment.',
                       }}
