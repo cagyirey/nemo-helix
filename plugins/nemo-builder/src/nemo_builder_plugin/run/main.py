@@ -23,6 +23,10 @@ def _load(name: str, rest: list[str]) -> Callable[[], int]:
         from nemo_builder_plugin.run.push import main
 
         return main
+    if name == "token-server":
+        from nemo_builder_plugin.run.token_server import main as token_server_main
+
+        return lambda: token_server_main(rest)
     raise KeyError(name)
 
 
@@ -30,12 +34,12 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = sys.argv[1:] if argv is None else argv
     if not args or args[0] in ("-h", "--help"):
-        print("usage: nhx-build {fetch|supervise|push}", file=sys.stderr)
+        print("usage: nhx-build {fetch|supervise|push|token-server}", file=sys.stderr)
         return 2
     try:
         command = _load(args[0], args[1:])
     except KeyError:
-        print(f"unknown command {args[0]!r}; expected fetch, supervise or push", file=sys.stderr)
+        print(f"unknown command {args[0]!r}; expected fetch, supervise, push or token-server", file=sys.stderr)
         return 2
     return command()
 
