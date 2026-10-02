@@ -126,7 +126,8 @@ WHEEL_ENV = "NEMO_AGENTS_WHEEL"
 #: Newest wheel in the checkout's ``dist``, so the value survives every rebuild.
 WHEEL_LATEST = "LATEST"
 
-PINNED_HERMES_COMMIT = "29112bef099274229cadff79cdff7bf7b99c4b77"  # Hermes Agent 0.21.0
+# Unreleased Hermes main with Relay 0.9 (NousResearch/hermes-agent#115343); pin a release once one includes it.
+PINNED_HERMES_COMMIT = "dccb84b92401234db294667ec203d3ac3dc1b87f"
 
 _FABRIC_HARNESS_INSTALLS = {
     "claude": "nemo-agents-plugin-claude",
