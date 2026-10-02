@@ -177,6 +177,16 @@ nemo-helix:
       - deployments
     env:
       NHX_AUTH_TOKEN_SIGNING__PRIVATE_KEY_FILE: "/etc/nhx/workload-token/private-key.pem"
+      NHX_OIDC_CLIENT_SECRET:
+        valueFrom:
+          secretKeyRef:
+            name: nemo-helix-user-oidc
+            key: client_secret
+      NHX_AUTH_SESSION_ENCRYPTION_KEY:
+        valueFrom:
+          secretKeyRef:
+            name: nemo-helix-user-oidc
+            key: session_encryption_key
     extraVolumes:
       - name: workload-token-signing-key
         secret:
@@ -268,12 +278,19 @@ nemo-helix:
         enabled: false
       oidc:
         enabled: true
-        issuer: '{{ include "nemo-helix-authentik.serviceUrl" (dict "root" . "serviceName" "authentik-server" "scheme" "http") }}/application/o/nemo-cli/'
+        issuer: '{{ include "nemo-helix-authentik.serviceUrl" (dict "root" . "serviceName" "authentik-server" "scheme" "http") }}/application/o/nemo-user/'
         additional_issuers:
           - '{{ include "nemo-helix-authentik.serviceUrl" (dict "root" . "serviceName" "authentik-server" "scheme" "http") }}/application/o/nemo/'
+          - '{{ include "nemo-helix-authentik.serviceUrl" (dict "root" . "serviceName" "authentik-server" "scheme" "http") }}/application/o/nemo-cli/'
+          - '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/application/o/nemo-user/'
           - '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/application/o/nemo-cli/'
           - '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/application/o/nemo/'
-        client_id: "nemo-helix-cli"
+        login_redirect_uri: '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/apis/auth/v2/login/callback'
+        client_id: "nemo-helix-user"
+        token_endpoint_auth_method: client_secret_basic
+        client_secret_env_var: NHX_OIDC_CLIENT_SECRET
+        session_encryption_key_env_var: NHX_AUTH_SESSION_ENCRYPTION_KEY
+        public_client_id: "nemo-helix-cli"
         token_endpoint: '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/application/o/token/'
         device_authorization_endpoint: '{{ include "nemo-helix-authentik.publicGatewayUrl" . }}/application/o/device/'
         workload_token_exchange_enabled: true

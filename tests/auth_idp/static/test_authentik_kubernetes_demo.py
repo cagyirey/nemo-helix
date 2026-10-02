@@ -1032,10 +1032,15 @@ def test_authentik_umbrella_values_configure_nemo_envoy_as_the_only_edge_proxy()
     }
     assert nemo_values["platformConfig"]["auth"]["access_keys"] == {"enabled": False}
     oidc = nemo_values["platformConfig"]["auth"]["oidc"]
-    assert oidc["issuer"] == f"{AUTHENTIK_SERVICE_URL_TEMPLATE}/application/o/nemo-cli/"
+    assert oidc["issuer"] == f"{AUTHENTIK_SERVICE_URL_TEMPLATE}/application/o/nemo-user/"
     assert oidc["additional_issuers"][0] == f"{AUTHENTIK_SERVICE_URL_TEMPLATE}/application/o/nemo/"
-    assert oidc["additional_issuers"][1] == f"{PUBLIC_GATEWAY_URL_TEMPLATE}/application/o/nemo-cli/"
-    assert oidc["additional_issuers"][2] == f"{PUBLIC_GATEWAY_URL_TEMPLATE}/application/o/nemo/"
+    assert oidc["additional_issuers"][1] == f"{AUTHENTIK_SERVICE_URL_TEMPLATE}/application/o/nemo-cli/"
+    assert oidc["additional_issuers"][2] == f"{PUBLIC_GATEWAY_URL_TEMPLATE}/application/o/nemo-user/"
+    assert oidc["additional_issuers"][3] == f"{PUBLIC_GATEWAY_URL_TEMPLATE}/application/o/nemo-cli/"
+    assert oidc["additional_issuers"][4] == f"{PUBLIC_GATEWAY_URL_TEMPLATE}/application/o/nemo/"
+    assert oidc["client_id"] == "nemo-helix-user"
+    assert oidc["public_client_id"] == "nemo-helix-cli"
+    assert oidc["token_endpoint_auth_method"] == "client_secret_basic"
     assert oidc["workload_token_endpoint"] == f"{ENVOY_SERVICE_URL_TEMPLATE}/apis/auth/token"
     assert oidc["workload_subject_jwks_uri"] == f"{AUTHENTIK_SERVICE_URL_TEMPLATE}/application/o/nemo-workload/jwks/"
     assert oidc["workload_subject_issuers"] == [

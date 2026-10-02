@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { AUTH_AUTHORITY, AUTH_CLIENT_ID } from '@studio/constants/environment';
+import {
+  AUTH_AUTHORITY,
+  AUTH_CLIENT_ID,
+  OIDC_TOKEN_ENDPOINT_AUTH_METHOD,
+} from '@studio/constants/environment';
 import { useEffect, useState } from 'react';
 import { hasAuthParams, useAuth } from 'react-oidc-context';
 import { useLocation } from 'react-router';
@@ -29,6 +33,12 @@ export const useAuthAutoLogin = (): { isAuthPending: boolean } => {
     !isE2E;
 
   useEffect(() => {
+    if (OIDC_TOKEN_ENDPOINT_AUTH_METHOD === 'client_secret_basic' && shouldAttemptLogin) {
+      const returnTo = `${location.pathname}${location.search}`;
+      window.location.assign(`/apis/auth/v2/login?return_to=${encodeURIComponent(returnTo)}`);
+      setHasAttemptedLogin(true);
+      return;
+    }
     if (shouldAttemptLogin) {
       auth.signinRedirect({
         state: {

@@ -35,6 +35,8 @@ services:
       NHX_CONFIG_WARNINGS_DISABLED: "1"
       NHX_AUTH_POLICY_DECISION_POINT_BASE_URL: http://127.0.0.1:8080
       NHX_AUTH_TOKEN_SIGNING__PRIVATE_KEY_FILE: /var/run/secrets/nemo-helix/workload-token-signing/private-key.pem
+      NHX_OIDC_CLIENT_SECRET: nemo-helix-user-secret-dev
+      NHX_AUTH_SESSION_ENCRYPTION_KEY: nemo-helix-user-session-key-dev
       NHX_SEED_ON_STARTUP: "true"
       NHX_PLATFORM_SEED_MODEL_PROVIDER_ENABLED: "false"
       NHX_SECRETS_ALLOW_KEY_CREATION: "1"
