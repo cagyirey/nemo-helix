@@ -225,3 +225,50 @@ async def test_get_other_workspace_ngc_name_not_treated_as_default(
     """A secret named ngc-api-key in a non-system workspace is not the default and returns 404 if missing."""
     response = test_client.get("/apis/secrets/v2/workspaces/default/secrets/ngc-api-key")
     assert response.status_code == 404
+
+
+async def test_list_secrets_system_workspace_omits_default_ngc_key_when_env_unset(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Unset NGC_API_KEY: the list does not crash, and the secret simply is not in it.
+
+    The synthesized default is appended to the listing from the environment on demand, so with
+    the variable unset there is nothing to append - the endpoint used to surface that failure as
+    a 500 on what is otherwise a plain read.
+    """
+    monkeypatch.delenv("NGC_API_KEY", raising=False)
+    response = test_client.get(
+        "/apis/secrets/v2/workspaces/system/secrets",
+        params={"page": 1, "page_size": 10},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert [s["name"] for s in data["data"]] == []
+    assert data["pagination"]["total_results"] == 0
+    # An empty listing has no pages, which is how the store reports it for the non-NGC workspace
+    # too - asserted here so the unset-key path provably does not re-add the pad the set-key
+    # path would have counted.
+    assert data["pagination"]["total_pages"] == 0
+
+
+async def test_get_default_ngc_api_key_when_env_unset_returns_404_with_env_hint(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset NGC_API_KEY: GET of the synthesized secret is a 404 naming the variable, not a 500."""
+    monkeypatch.delenv("NGC_API_KEY", raising=False)
+    response = test_client.get("/apis/secrets/v2/workspaces/system/secrets/ngc-api-key")
+    assert response.status_code == 404
+    assert "NGC_API_KEY" in response.json()["detail"]
+
+
+async def test_access_default_ngc_api_key_when_env_unset_returns_404(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset NGC_API_KEY: the access endpoint 404s like any other missing secret."""
+    monkeypatch.delenv("NGC_API_KEY", raising=False)
+    response = test_client.get("/apis/secrets/v2/workspaces/system/secrets/ngc-api-key/access")
+    assert response.status_code == 404
+    assert "NGC_API_KEY" in response.json()["detail"]

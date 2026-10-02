@@ -14,7 +14,11 @@ from nmp.common.secrets.encryption import envelope_decrypt, envelope_encrypt
 from nmp.common.secrets.exceptions import EncryptionError
 from nmp.common.service.dependencies import get_entity_client, get_platform_config
 from nmp.core.secrets.api.v2.secrets import schemas
-from nmp.core.secrets.api.v2.secrets.ngc_api_key import get_default_ngc_api_key, is_default_ngc_api_key
+from nmp.core.secrets.api.v2.secrets.ngc_api_key import (
+    get_default_ngc_api_key,
+    is_default_ngc_api_key,
+    ngc_api_key_configured,
+)
 from nmp.core.secrets.app.ctx import SecretsContext
 from nmp.core.secrets.app.encryptor import get_current_encryptor, get_encryptor_by_name
 from nmp.core.secrets.entities import PlatformSecret
@@ -102,10 +106,14 @@ async def list_secrets(
         total_pages = result.pagination.total_pages
         ngc_api_key_secret = platform_config.ngc_api_key_secret.split("/")
         if is_default_ngc_api_key(platform_config, workspace, ngc_api_key_secret[1]):
-            total_results = result.pagination.total_results + 1
-            total_pages = math.ceil(total_results / page_size) if page_size else 1
-            if page == total_pages:
-                result.data.append(get_default_ngc_api_key(platform_config))
+            # Only advertise the synthesized default when its key is present in the environment:
+            # when it is not, listing must not crash for a secret that simply does not exist, and
+            # pagination must not count an entry that will never be returned.
+            if ngc_api_key_configured(platform_config):
+                total_results = result.pagination.total_results + 1
+                total_pages = math.ceil(total_results / page_size) if page_size else 1
+                if page == total_pages:
+                    result.data.append(get_default_ngc_api_key(platform_config))
 
         return Page(
             data=[schemas.PlatformSecretResponse.from_entity(secret) for secret in result.data],
@@ -130,6 +138,14 @@ async def get_secret(
     with scoped_app_ctx(SecretsContext(name=name, namespace=workspace)):
         # If the secret is the default NGC API key secret, return the default NGC API key secret metadata
         if is_default_ngc_api_key(platform_config, workspace, name):
+            if not ngc_api_key_configured(platform_config):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"Secret {workspace}/{name} not found: it is synthesized from "
+                        f"${platform_config.ngc_api_key_env_var}, which is not set"
+                    ),
+                )
             return schemas.PlatformSecretResponse.from_entity(get_default_ngc_api_key(platform_config))
 
         try:
@@ -218,6 +234,14 @@ async def access_secret(
 
         # If the secret is the default NGC API key secret, return its value directly
         if is_default_ngc_api_key(platform_config, workspace, name):
+            if not ngc_api_key_configured(platform_config):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"Secret {workspace}/{name} not found: it is synthesized from "
+                        f"${platform_config.ngc_api_key_env_var}, which is not set"
+                    ),
+                )
             return schemas.PlatformSecretAccessResponse(
                 name=name,
                 workspace=workspace,
