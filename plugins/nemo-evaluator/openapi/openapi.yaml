@@ -2627,6 +2627,15 @@ components:
           format: date-time
           title: Updated At
           description: Timestamp the result was last updated.
+        trial_count:
+          title: Trial Count
+          description: Trials the run produced; None for older records.
+          type: integer
+        error_count:
+          title: Error Count
+          description: Trials that failed to produce or reported a producer error;
+            None for older records.
+          type: integer
       type: object
       required:
       - id
@@ -3808,6 +3817,15 @@ components:
           type: array
           title: Metric Types
           description: Runtime metric type names applied in the run.
+        row_count:
+          title: Row Count
+          description: Dataset rows the run evaluated; None for older records.
+          type: integer
+        error_row_count:
+          title: Error Row Count
+          description: Rows where inference or a metric recorded an error; None for
+            older records.
+          type: integer
       type: object
       required:
       - id

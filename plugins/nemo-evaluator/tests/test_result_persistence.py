@@ -224,6 +224,7 @@ def test_persist_agent_eval_result_builds_entity_and_saves(tmp_path: Path, mocke
     assert entity.target_name == "openai/gpt-5.4"
     assert entity.target_url is None
     assert entity.bundle_ref == "fileset://dev/agent-eval-results#b"
+    assert (entity.trial_count, entity.error_count) == (0, 0)
 
 
 def test_persist_evaluate_result_records_dataset_and_metric_types(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -246,6 +247,7 @@ def test_persist_evaluate_result_records_dataset_and_metric_types(tmp_path: Path
     assert entity.target_kind == "model"
     assert entity.dataset_ref == "dev/my-dataset"
     assert entity.metric_types == ["exact_match"]
+    assert (entity.row_count, entity.error_row_count) == (0, 0)
 
 
 def test_persist_skips_when_no_job_id(tmp_path: Path, mocker: MockerFixture) -> None:

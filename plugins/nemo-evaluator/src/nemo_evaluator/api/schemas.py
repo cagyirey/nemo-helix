@@ -198,6 +198,12 @@ class _ResultBase(BaseModel):
 class AgentEvalResult(_ResultBase):
     """API representation of a persisted agent-evaluation result record."""
 
+    trial_count: int | None = Field(default=None, description="Trials the run produced; None for older records.")
+    error_count: int | None = Field(
+        default=None,
+        description="Trials that failed to produce or reported a producer error; None for older records.",
+    )
+
 
 class EvaluateResult(_ResultBase):
     """API representation of a persisted (row) evaluation result record."""
@@ -206,6 +212,11 @@ class EvaluateResult(_ResultBase):
         default=None, description="Reference to the dataset evaluated; None for an inline dataset."
     )
     metric_types: list[str] = Field(description="Runtime metric type names applied in the run.")
+    row_count: int | None = Field(default=None, description="Dataset rows the run evaluated; None for older records.")
+    error_row_count: int | None = Field(
+        default=None,
+        description="Rows where inference or a metric recorded an error; None for older records.",
+    )
 
 
 class Task(BaseModel):

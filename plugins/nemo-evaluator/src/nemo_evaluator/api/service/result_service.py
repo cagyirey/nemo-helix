@@ -48,6 +48,8 @@ def _to_agent_eval(entity: AgentEvalResultEntity) -> AgentEvalResult:
         bundle_ref=entity.bundle_ref,
         created_at=created_at,
         updated_at=updated_at,
+        trial_count=entity.trial_count,
+        error_count=entity.error_count,
     )
 
 
@@ -68,6 +70,8 @@ def _to_evaluate(entity: EvaluateResultEntity) -> EvaluateResult:
         updated_at=updated_at,
         dataset_ref=entity.dataset_ref,
         metric_types=entity.metric_types,
+        row_count=entity.row_count,
+        error_row_count=entity.error_row_count,
     )
 
 

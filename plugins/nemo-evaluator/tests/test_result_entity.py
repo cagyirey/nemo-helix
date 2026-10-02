@@ -71,11 +71,14 @@ def test_agent_eval_result_roundtrip_preserves_scores_and_target() -> None:
         target_url=None,
         scores=_scores(),
         bundle_ref="fileset://default/agent-eval-results#bundle",
+        trial_count=10,
+        error_count=2,
     )
 
     restored = _roundtrip(entity)
 
     assert restored.job_id == "job-123"
+    assert (restored.trial_count, restored.error_count) == (10, 2)
     assert restored.target_kind == "fabric"
     assert restored.target_name == "openai/gpt-5.4"
     assert restored.target_url is None
@@ -97,14 +100,35 @@ def test_evaluate_result_roundtrip_preserves_dataset_and_metric_types() -> None:
         bundle_ref="fileset://default/eval-results#bundle",
         dataset_ref="default/my-dataset",
         metric_types=["exact_match", "string_check"],
+        row_count=10,
+        error_row_count=1,
     )
 
     restored = _roundtrip(entity)
 
     assert restored.dataset_ref == "default/my-dataset"
+    assert (restored.row_count, restored.error_row_count) == (10, 1)
     assert restored.metric_types == ["exact_match", "string_check"]
     assert restored.target_url == "https://model.test/v1/chat/completions"
     assert restored.scores == entity.scores
+
+
+def test_records_persisted_before_the_counts_still_load() -> None:
+    restored = AgentEvalResultEntity.model_validate(
+        {
+            "name": "job-old",
+            "workspace": "default",
+            "job_id": "job-old",
+            "target_kind": "fabric",
+            "target_name": "gpt-5.5",
+            "target_url": None,
+            "scores": _scores().model_dump(mode="json"),
+            "bundle_ref": "fileset://default/agent-eval-results#old",
+        }
+    )
+
+    assert restored.trial_count is None
+    assert restored.error_count is None
 
 
 def test_entity_types_are_distinct() -> None:
