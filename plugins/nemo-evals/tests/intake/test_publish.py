@@ -499,6 +499,42 @@ async def test_the_published_otlp_payload_carries_the_stamped_identity() -> None
     assert span.trace_id.hex() == _OTLP_TRACE_ID
 
 
+async def test_the_published_otlp_root_span_carries_the_agent_identity() -> None:
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+
+    intake = InMemoryIntakeService()
+    child = {
+        "traceId": _OTLP_TRACE_ID,
+        "spanId": "aabbccddeeff0011",
+        "parentSpanId": _OTLP_SPAN_ID,
+        "name": "subagent",
+        "attributes": [{"key": "gen_ai.agent.name", "value": {"stringValue": "researcher"}}],
+    }
+
+    await publish_to_intake(
+        _result(
+            [_otlp_trial(extra_spans=[child])],
+            [_score("t-1", "accuracy", [MetricOutput(name="score", value=1.0)])],
+        ),
+        client=intake.client(),
+        experiment_id="exp-1",
+        agent_name="contract-reviewer",
+        agent_version="v2",
+    )
+
+    sent = ExportTraceServiceRequest()
+    sent.ParseFromString(intake.otlp_requests[0]["body"])
+    spans = {span.name: span for span in sent.resource_spans[0].scope_spans[0].spans}
+    root = {attribute.key: attribute.value.string_value for attribute in spans["agent run"].attributes}
+    # Intake reads a trace's agent from its root span, so the publication's identity goes there,
+    # as the ATIF path puts it on the trajectory.
+    assert root["gen_ai.agent.name"] == "contract-reviewer"
+    assert root["gen_ai.agent.version"] == "v2"
+    # A span the agent named itself (a subagent) keeps its own name.
+    child_attributes = {attribute.key: attribute.value.string_value for attribute in spans["subagent"].attributes}
+    assert child_attributes["gen_ai.agent.name"] == "researcher"
+
+
 async def test_a_trial_without_an_otlp_trace_still_publishes_atif() -> None:
     intake = InMemoryIntakeService()
     client = intake.client()

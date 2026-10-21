@@ -220,6 +220,8 @@ async def publish_to_intake(
             evaluation_name=experiment_id,
             measurements=measurements,
             started_at=started_at,
+            agent_name=agent_name,
+            agent_version=agent_version,
         )
         if otlp is None:
             return None

@@ -76,6 +76,8 @@ DEFAULT_AGENT_VERSION = "unknown"
 _SESSION_ID_ATTRIBUTE = "gen_ai.conversation.id"
 _EVALUATION_NAME_ATTRIBUTE = "nemo.evaluation.name"
 _TEST_CASE_NAME_ATTRIBUTE = "nemo.test_case.name"
+_AGENT_NAME_ATTRIBUTE = "gen_ai.agent.name"
+_AGENT_VERSION_ATTRIBUTE = "gen_ai.agent.version"
 
 
 def session_id_for(run_id: str, trial_id: str) -> str:
@@ -170,6 +172,8 @@ async def otlp_ingest_for_trial(
     evaluation_name: str,
     measurements: TrialMeasurements,
     started_at: datetime,
+    agent_name: str,
+    agent_version: str = DEFAULT_AGENT_VERSION,
 ) -> tuple[bytes, str] | None:
     """Return the trial's OTLP payload stamped with evaluation identity, and its root span id.
 
@@ -186,6 +190,11 @@ async def otlp_ingest_for_trial(
     layers as ``{**resource, **span}``. An agent that records its own ``gen_ai.conversation.id``
     would otherwise win, and the session id is what Intake's ``ReplacingMergeTree`` is keyed on,
     so a re-publish would insert duplicates instead of replacing.
+
+    The agent identity goes on the root span alone, the span Intake reads a trace's agent from, as
+    the ATIF path puts it on the trajectory. A runtime's exporter names its own service (Fabric's
+    is ``fabric``), so without it the trace has no agent and an agent-scoped query cannot find it;
+    the other spans keep any agent name the agent recorded itself, such as a subagent's.
     """
     evidence = trial.evidence
     if evidence is None:
@@ -215,7 +224,14 @@ async def otlp_ingest_for_trial(
             _TEST_CASE_NAME_ATTRIBUTE: trial.task_id,
         },
     )
-    set_root_span_attributes(resource_spans, _trial_totals(trial, measurements))
+    set_root_span_attributes(
+        resource_spans,
+        {
+            _AGENT_NAME_ATTRIBUTE: agent_name,
+            _AGENT_VERSION_ATTRIBUTE: agent_version,
+            **_trial_totals(trial, measurements),
+        },
+    )
     if trial.error is not None:
         set_root_span_error(resource_spans, message=trial.error.message)
     fill_missing_start_times(resource_spans, start_time_unix_nano=int(started_at.timestamp() * 1_000_000_000))
