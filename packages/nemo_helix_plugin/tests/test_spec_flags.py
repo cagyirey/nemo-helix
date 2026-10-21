@@ -28,7 +28,7 @@ from nemo_helix_plugin._spec_flags import (
     make_field_param,
     walk_spec_leaves,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel
 
 
 class _Inner(BaseModel):
@@ -94,6 +94,26 @@ class TestWalkSpecLeaves:
 
         leaf = walk_spec_leaves(_Custom)[0]
         assert leaf.metavar == "USER_NAME"
+
+    def test_root_model_field_is_a_flag_for_the_field_itself(self) -> None:
+        # A RootModel serializes as its root value, so ``dataset`` takes
+        # ``--dataset ws/name``; a ``--dataset.root`` flag would send
+        # ``{"dataset": {"root": ...}}``, which the schema rejects.
+        class _Ref(RootModel[str]):
+            root: str = Field(description="Reference to a Fileset.")
+
+        class _WithRef(BaseModel):
+            dataset: _Ref
+            baseline: Optional[_Ref] = _Ref("ws/base")
+
+        leaves = {leaf.flag: leaf for leaf in walk_spec_leaves(_WithRef)}
+        assert set(leaves) == {"--dataset", "--baseline"}
+        assert leaves["--dataset"].python_type is str
+        assert leaves["--dataset"].required is True
+        assert leaves["--dataset"].description == "Reference to a Fileset."
+        assert leaves["--baseline"].default == "ws/base"
+        overlay = build_overlay(list(leaves.values()), {"dataset": "ws/x", "baseline": UNSET}, unset_sentinel=UNSET)
+        assert _WithRef.model_validate(overlay).dataset.root == "ws/x"
 
     def test_mixed_scalar_model_union_keeps_scalar_arm_flag(self) -> None:
         # ``str | SomeModel`` used to be dropped entirely (no shared

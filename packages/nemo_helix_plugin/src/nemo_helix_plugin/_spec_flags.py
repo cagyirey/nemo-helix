@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Union, cast, get_args, get_origin
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
@@ -171,7 +171,16 @@ def _walk(
     for name, info in model.model_fields.items():
         path = (*prefix, name)
         annotation = info.annotation
+        description = info.description
         unwrapped, is_partial = _strip_optional(annotation)
+        if isinstance(unwrapped, type) and issubclass(unwrapped, RootModel):
+            # A RootModel serializes as its root value, so the flag sets the field itself,
+            # not a ``.root`` child: ``--dataset ws/name`` sends ``"dataset": "ws/name"``.
+            root_info = unwrapped.model_fields["root"]
+            annotation = root_info.annotation
+            description = description or root_info.description
+            unwrapped, root_partial = _strip_optional(annotation)
+            is_partial = is_partial or root_partial
         if unwrapped is None:
             logger.debug(
                 "Skipping field %s on %s: unsupported union or unannotated.",
@@ -233,8 +242,8 @@ def _walk(
                 path=path,
                 param_name=param_name,
                 python_type=unwrapped,
-                default=_extract_default(info),
-                description=info.description or "",
+                default=_root_value(_extract_default(info)),
+                description=description or "",
                 required=_is_required(info),
                 metavar=_derive_metavar(annotation, info),
                 partial=is_partial,
@@ -399,6 +408,11 @@ def _extract_default(info: FieldInfo) -> Any:
             # the schema validates the missing-value case server-side.
             return PydanticUndefined
     return PydanticUndefined
+
+
+def _root_value(value: Any) -> Any:
+    """Unwrap a RootModel default to the plain value its flag carries."""
+    return value.root if isinstance(value, RootModel) else value
 
 
 def _path_to_param_name(path: tuple[str, ...], *, used: set[str]) -> str:
