@@ -551,6 +551,25 @@ class TestSpecFlagRename:
         assert result.exit_code == 0
         assert captured["spec"] == {"name": "FromYaml"}
 
+    def test_submit_spec_overlays_spec_file(self, tmp_path: Path, monkeypatch) -> None:
+        # Documented precedence: --spec-file (base) → --spec JSON (overlay).
+        captured: dict[str, object] = {}
+
+        def _capture(_self, _job_cls, spec, **_kwargs) -> dict:
+            captured["spec"] = spec
+            return {"id": "job-123"}
+
+        monkeypatch.setattr("nemo_helix_plugin.scheduler.NemoJobScheduler.submit_remote", _capture)
+        spec_file = tmp_path / "spec.yaml"
+        spec_file.write_text("name: FromYaml\nloud: true\n")
+        app = _app_with_jobs(_GreetSpecJob)
+        result = runner.invoke(
+            app,
+            ["greet-spec", "--spec-file", str(spec_file), "--spec", '{"name": "FromSpec"}'],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["spec"] == {"name": "FromSpec", "loud": True}
+
     def test_submit_missing_spec_file_exits_cleanly(self, tmp_path: Path) -> None:
         missing_file = tmp_path / "missing.yaml"
         app = _app_with_jobs(_GreetJob)
