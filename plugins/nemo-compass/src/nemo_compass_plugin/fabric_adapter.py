@@ -97,11 +97,38 @@ class CompassRuntime:
         # invocation. The runtime is long-lived and serves many; a leftover
         # FABRIC_RELAY_CONFIG_PATH is the ambient-config hazard the bundled
         # adapters have a named guard against.
+        #
+        # Relay delivers the trajectory when the activation closes, and a
+        # delivery it could not confirm (an Intake slower than the exporter's
+        # timeout, say) raises from that teardown. The trajectory is a side
+        # output of the run: once the analysis has finished, losing it must not
+        # discard the result, and when the analysis itself failed, its error is
+        # the one to report.
         with _applied_environment(telemetry.env):
             reject_ambient_relay_plugin_config()
-            async with relay_plugin.activate(_relay_plugin_config(telemetry)) as activation:
-                reject_inherited_relay_plugin_config(activation.report)
-                return await self._run_analysis(request, relay_scope_name=COMPASS_RELAY_SCOPE)
+            finished = False
+            body_error: BaseException | None = None
+            try:
+                async with relay_plugin.activate(_relay_plugin_config(telemetry)) as activation:
+                    try:
+                        reject_inherited_relay_plugin_config(activation.report)
+                        result = await self._run_analysis(request, relay_scope_name=COMPASS_RELAY_SCOPE)
+                    except BaseException as error:
+                        body_error = error
+                        raise
+                    finished = True
+            except Exception as error:
+                if finished:
+                    logger.warning(
+                        "Compass finished, but Relay could not deliver its telemetry; keeping the result.",
+                        exc_info=True,
+                    )
+                    return result
+                if body_error is not None and error is not body_error:
+                    logger.warning("Relay teardown also failed after the run failed.", exc_info=True)
+                    raise body_error from None
+                raise
+            return result
 
     async def _run_analysis(self, request: contract.AgentRunRequest, *, relay_scope_name: str | None = None):
         target_agent = _string_setting(self._settings, "agent") or _string_setting(self._settings, "target_agent")

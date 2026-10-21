@@ -395,6 +395,73 @@ async def test_relay_refuses_plugin_config_inherited_during_activation(
     assert "/home/user/plugins.toml" in result.output["response"]
 
 
+# What Relay raises from teardown when the ATIF export did not reach Intake in time.
+_DELIVERY_FAILURE = (
+    "registration failed: dynamic plugin teardown failed: registration failed: plugin teardown failed: "
+    "observability registration 'nemo-relay-plugin.v1.observability:1:atif.shutdown' reported a delivery "
+    "failure: registration failed: ATIF runtime delivery failures: atif.remote_delivery_failed (1)"
+)
+
+
+def _activation_whose_teardown_fails() -> Any:
+    @asynccontextmanager
+    async def fake_activate(config: Any) -> AsyncGenerator[SimpleNamespace, None]:
+        try:
+            yield _clean_activation()
+        finally:
+            raise RuntimeError(_DELIVERY_FAILURE)
+
+    return fake_activate
+
+
+async def test_a_finished_run_survives_a_telemetry_delivery_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_relay_config: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The run's own trace is a side output; losing it must not discard the result."""
+
+    async def fake_run_compass_change_set(**kwargs: Any) -> tuple[CompassResult, object]:
+        return CompassResult(summary="done"), object()
+
+    monkeypatch.setattr(fabric_adapter, "run_compass_change_set", fake_run_compass_change_set)
+    monkeypatch.setattr(fabric_adapter.relay_plugin, "activate", _activation_whose_teardown_fails())
+    monkeypatch.setattr(fabric_adapter, "get_async_task_nemo_client", _stub_client_factory([]))
+
+    runtime = fabric_adapter.CompassRuntime()
+    await runtime.start({"config": _agent_config({"agent": "research-agent"})})
+
+    result = await runtime.invoke(
+        _request({"job_workspace": "w"}), _runtime_context(_minimal_relay_telemetry(tmp_path))
+    )
+
+    assert result.status is contract.AgentRunStatus.SUCCEEDED
+    assert result.output["compass_result"]["summary"] == "done"
+    assert "atif.remote_delivery_failed" in caplog.text
+
+
+async def test_a_failed_run_reports_its_own_error_when_teardown_also_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, isolated_relay_config: Path
+) -> None:
+    async def fake_run_compass_change_set(**kwargs: Any) -> tuple[CompassResult, object]:
+        raise RuntimeError("analysis broke")
+
+    monkeypatch.setattr(fabric_adapter, "run_compass_change_set", fake_run_compass_change_set)
+    monkeypatch.setattr(fabric_adapter.relay_plugin, "activate", _activation_whose_teardown_fails())
+    monkeypatch.setattr(fabric_adapter, "get_async_task_nemo_client", _stub_client_factory([]))
+
+    runtime = fabric_adapter.CompassRuntime()
+    await runtime.start({"config": _agent_config({"agent": "research-agent"})})
+
+    result = await runtime.invoke(
+        _request({"job_workspace": "w"}), _runtime_context(_minimal_relay_telemetry(tmp_path))
+    )
+
+    assert result.status is contract.AgentRunStatus.FAILED
+    assert result.output["response"] == "analysis broke"
+
+
 async def test_without_relay_the_agent_runs_unscoped() -> None:
     """Relay is opt-in per invocation; Fabric says when."""
     seen: dict[str, Any] = {}
