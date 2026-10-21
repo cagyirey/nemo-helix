@@ -3,11 +3,12 @@
 
 """Adapt a dataset-driven (row) evaluation result into the shape ``publish_to_intake`` consumes.
 
-Row evaluation and agent evaluation converge at the Intake boundary: a published trajectory is a
-single step carrying the final output text (see ``mapping.trial_to_atif_ingest``), and a row's
-``sample`` is already ``{"output_text": ..., "response": ...}`` — the field names of ``AgentOutput``.
-So rather than a second mapping and a second publish loop, a row result is adapted to an
-``AgentEvalResult`` and goes through the same publisher, inheriting its idempotency guarantees.
+Row evaluation and agent evaluation converge at the Intake boundary: a row's ``sample`` is already
+``{"output_text": ..., "response": ...}`` — the field names of ``AgentOutput``. So rather than a
+second mapping and a second publish loop, a row result is adapted to an ``AgentEvalResult`` and goes
+through the same publisher, inheriting its idempotency guarantees. The row's generation request (the
+messages, or the rendered body of a generic target) rides along as an inline ATIF trace ahead of the
+output, so the published trajectory shows what the target was asked and not only what it answered.
 
 The row vocabulary maps as: one row -> one trial, one (row, metric key) -> one score. A row's
 test case identity is its content hash by default, so repeated rows become repeated trials of a
@@ -50,6 +51,12 @@ from nhx_evals_sdk.agent_eval.usage_keys import (
     _first_usage_details,
 )
 from nhx_evals_sdk.values.dataset_schemas import _KNOWN_BINDING_FIELDS
+from nhx_evals_sdk.values.evidence import (
+    EVIDENCE_FORMAT_ATIF,
+    EVIDENCE_TRACE,
+    CandidateEvidence,
+    EvidenceDescriptor,
+)
 from nhx_evals_sdk.values.multi_metric_results import BenchmarkEvaluationResult
 from nhx_evals_sdk.values.results import EvaluationResult, RowScore
 
@@ -60,6 +67,12 @@ _INFERENCE_ERROR = "inference_error"
 
 #: Canonical evaluator fields that ``field_mapping`` copies into a row alongside its own columns.
 _CANONICAL_FIELDS = frozenset(_KNOWN_BINDING_FIELDS)
+
+#: ATIF schema version of the inline trace a row's request and output are published as.
+_ATIF_SCHEMA_VERSION = "ATIF-v1.7"
+
+#: Chat roles and the ATIF step source each becomes; any other role is the user's side of the turn.
+_MESSAGE_SOURCES = {"system": "system", "developer": "system", "assistant": "agent"}
 
 
 class RowIdentityError(ValueError):
@@ -109,6 +122,64 @@ def _generation_error(row: RowScore) -> TrialError:
     if inference_error:
         return TrialError(type="InferenceError", message=str(inference_error))
     return TrialError(type="EmptyOutput", message="Generation produced no output.")
+
+
+def _generation_request(row: RowScore) -> Mapping[str, Any] | None:
+    """The request that produced the row's sample, or ``None`` when the row records none.
+
+    ``row.requests`` mixes the generation call with each metric's judge calls, and an offline row
+    has only the judge calls, so the generation call is the one whose response is the sample's.
+    """
+    response = row.sample.get("response")
+    if response is None:
+        return None
+    for entry in row.requests:
+        if isinstance(entry, Mapping) and entry.get("response") == response:
+            request = entry.get("request")
+            return request if isinstance(request, Mapping) else None
+    return None
+
+
+def _text(content: object) -> str:
+    return content if isinstance(content, str) else json.dumps(content, sort_keys=True, default=str)
+
+
+def _request_steps(request: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """ATIF steps for what the target was sent: its chat messages, else the whole request body."""
+    messages = request.get("messages")
+    if isinstance(messages, list) and messages:
+        return [
+            {"source": _MESSAGE_SOURCES.get(str(message.get("role")), "user"), "message": _text(message.get("content"))}
+            for message in messages
+            if isinstance(message, Mapping)
+        ]
+    prompt = request.get("prompt")
+    if isinstance(prompt, str):
+        return [{"source": "user", "message": prompt}]
+    # A generic target's rendered body is its request; the sampling settings ride along with it.
+    return [{"source": "user", "message": _text(dict(request))}]
+
+
+def _request_evidence(row: RowScore, output: AgentOutput | None) -> CandidateEvidence | None:
+    """The row's request and output as an inline ATIF trace, or ``None`` when no request was recorded."""
+    request = _generation_request(row)
+    if request is None:
+        return None
+    steps = _request_steps(request)
+    if output is not None and output.output_text is not None:
+        agent_step: dict[str, Any] = {"source": "agent", "message": output.output_text}
+        model = request.get("model")
+        if isinstance(model, str):
+            agent_step["model_name"] = model
+        steps.append(agent_step)
+    if not steps:
+        return None
+    trajectory = {"schema_version": _ATIF_SCHEMA_VERSION, "steps": steps}
+    return CandidateEvidence(
+        descriptors={
+            EVIDENCE_TRACE: EvidenceDescriptor(kind=EVIDENCE_TRACE, format=EVIDENCE_FORMAT_ATIF, data=trajectory)
+        }
+    )
 
 
 def _token_measurements(row: RowScore) -> TrialMeasurements:
@@ -273,6 +344,7 @@ def row_result_to_agent_eval_result(
                 task_id=task_id,
                 status=AgentEvalTrialStatus.COMPLETED if output is not None else AgentEvalTrialStatus.FAILED,
                 output=output,
+                evidence=_request_evidence(row, output),
                 error=_generation_error(row) if output is None else None,
                 measurements=_token_measurements(row).with_runtime(row.runtime_sec),
             )

@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from nemo_evals.intake.mapping import score_to_evaluator_results
+from nemo_evals.intake.mapping import atif_steps_from_trial, score_to_evaluator_results, trial_to_atif_ingest
 from nemo_evals.intake.row_adapter import RowIdentityError, row_result_to_agent_eval_result
 from nhx_evals_sdk.agent_eval.scores import AgentEvalScoreStatus
 from nhx_evals_sdk.agent_eval.trials import AgentEvalTrialStatus, TrialError
@@ -31,13 +32,14 @@ def _row(
     metrics: dict[str, list[MetricOutput]] | None = None,
     metric_errors: dict[str, str] | None = None,
     metric_diagnostics: dict[str, list[Any]] | None = None,
+    requests: list[dict[str, Any]] | None = None,
 ) -> RowScore:
     return RowScore(
         row_index=row_index,
         item=item if item is not None else {"question": "2+2?"},
         sample=sample if sample is not None else {"output_text": "4", "response": {"choices": []}},
         metrics=metrics if metrics is not None else {"exact_match": [MetricOutput(name="score", value=1.0)]},
-        requests=[],
+        requests=requests if requests is not None else [],
         metric_errors=metric_errors,
         metric_diagnostics=metric_diagnostics,
     )
@@ -383,3 +385,84 @@ def test_recorded_generation_runtime_becomes_the_trial_runtime() -> None:
 def test_a_runtime_key_in_the_sample_is_not_treated_as_measured_runtime() -> None:
     trial = _adapt([_row(sample={"output_text": "4", "response": {}, "runtime_sec": 18.5})]).trials[0]
     assert trial.measurements.runtime_sec is None
+
+
+# --- what the target was asked ------------------------------------------------
+
+GENERATION_RESPONSE = {"choices": [{"message": {"role": "assistant", "content": "4"}}]}
+JUDGE_CALL = {
+    "request": {"model": "judge", "messages": [{"role": "user", "content": "Is 4 right?"}]},
+    "response": {"choices": [{"message": {"role": "assistant", "content": "yes"}}]},
+}
+
+
+def _chat_row() -> RowScore:
+    generation_call = {
+        "request": {
+            "model": "provider/model",
+            "messages": [
+                {"role": "system", "content": "Answer with a number."},
+                {"role": "user", "content": "2+2?"},
+            ],
+        },
+        "response": GENERATION_RESPONSE,
+    }
+    return _row(
+        sample={"output_text": "4", "response": GENERATION_RESPONSE},
+        requests=[generation_call, JUDGE_CALL],
+    )
+
+
+async def test_published_trajectory_carries_the_request_before_the_output() -> None:
+    trial = _adapt([_chat_row()]).trials[0]
+
+    recorded = await atif_steps_from_trial(trial, started_at=STARTED_AT)
+
+    assert recorded is not None
+    assert [(step["source"], step["message"]) for step in recorded.steps] == [
+        ("system", "Answer with a number."),
+        ("user", "2+2?"),
+        ("agent", "4"),
+    ]
+    assert recorded.steps[-1]["model_name"] == "provider/model"
+    body = trial_to_atif_ingest(
+        trial, run_id=RUN_ID, evaluation_name="eval", agent_name="agent", started_at=STARTED_AT, steps=recorded
+    )
+    assert body["steps"][0]["message"] == "Answer with a number."
+
+
+async def test_a_generic_targets_rendered_body_is_the_user_step() -> None:
+    body = {"statement": "s", "contract": "c"}
+    row = _row(
+        sample={"output_text": "ok", "response": {"answer": "ok"}},
+        requests=[{"request": body, "response": {"answer": "ok"}}],
+    )
+
+    recorded = await atif_steps_from_trial(_adapt([row]).trials[0], started_at=STARTED_AT)
+
+    assert recorded is not None
+    assert [step["source"] for step in recorded.steps] == ["user", "agent"]
+    assert json.loads(recorded.steps[0]["message"]) == body
+
+
+def test_judge_calls_are_not_mistaken_for_the_request() -> None:
+    # An offline row was never generated, so its only requests are the metric's judge calls.
+    row = _row(sample={"output_text": "4", "response": {"cached": True}}, requests=[JUDGE_CALL])
+
+    assert _adapt([row]).trials[0].evidence is None
+
+
+async def test_a_failed_generation_still_publishes_what_was_asked() -> None:
+    request = {"model": "provider/model", "messages": [{"role": "user", "content": "2+2?"}]}
+    response = {"error": "upstream 500"}
+    row = _row(
+        sample={"inference_error": "upstream 500", "response": response},
+        requests=[{"request": request, "response": response}],
+    )
+
+    trial = _adapt([row]).trials[0]
+    recorded = await atif_steps_from_trial(trial, started_at=STARTED_AT)
+
+    assert trial.status == AgentEvalTrialStatus.FAILED
+    assert recorded is not None
+    assert [(step["source"], step["message"]) for step in recorded.steps] == [("user", "2+2?")]
