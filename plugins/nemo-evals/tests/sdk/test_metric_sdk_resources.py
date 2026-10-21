@@ -160,6 +160,27 @@ def test_sync_create_requires_explicit_packager_for_custom_metric() -> None:
         resource.create("custom", metric=cast(RuntimeMetric, _CustomRuntimeMetric()))
 
 
+class _OptionalOutputMetric(_CustomRuntimeMetric):
+    """A custom metric whose second output is only reported for some rows."""
+
+    def output_spec(self) -> list[MetricOutputSpec]:
+        return [
+            MetricOutputSpec.continuous_score("score"),
+            MetricOutputSpec.continuous_score("subset_score", required=False),
+        ]
+
+
+def test_sync_create_keeps_optional_outputs() -> None:
+    bundle = bundle_metric(cast(RuntimeMetric, _OptionalOutputMetric()), CloudpickleMetricBundlePackager())
+    resource, recorder = _sync_resource(_metric_response("optional", bundle))
+
+    resource.create("optional", metric=bundle)
+
+    outputs = {output["name"]: output for output in _request_body(recorder.requests[0])["outputs"]}
+    assert "required" not in outputs["score"]
+    assert outputs["subset_score"]["required"] is False
+
+
 def test_sync_retrieve_targets_item_url() -> None:
     bundle = _bundle()
     resource, recorder = _sync_resource(_metric_response("exact", bundle))
