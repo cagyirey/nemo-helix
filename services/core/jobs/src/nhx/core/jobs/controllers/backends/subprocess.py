@@ -337,12 +337,12 @@ class SubprocessJobBackend(JobBackend[SubprocessExecutionProvider, SubprocessJob
         # deadline, and a cancelling step was just terminated above, so neither is timed out here.
         if step.status not in (HelixJobStatus.ACTIVE, HelixJobStatus.PENDING):
             return self._create_step_update(step, metadata)
-        ttl_seconds = (
-            step_ttl_seconds_active(step, self._execution_profile_config.ttl_seconds_active)
-            if step.status == HelixJobStatus.ACTIVE
-            else self._execution_profile_config.ttl_seconds_before_active
-        )
-        if self.check_step_ttl(step, ttl_seconds):
+        # Only a running process can time out, and a running process is active even when the
+        # step is still pending: the first sync after schedule() sees the status schedule()
+        # wrote. Charging it the before-active TTL from creation would kill a step for time it
+        # spent queued before it was scheduled, or report a step that already finished as timed out.
+        ttl_seconds = step_ttl_seconds_active(step, self._execution_profile_config.ttl_seconds_active)
+        if metadata.process.poll() is None and self.check_step_ttl(step, ttl_seconds):
             message = f"Job timed out after reaching max TTL of {ttl_seconds} seconds"
             self._terminate_process(metadata, force=True)
             self._update_task(

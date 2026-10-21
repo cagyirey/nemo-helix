@@ -109,6 +109,61 @@ def test_created_step_does_not_ttl_before_backend_acceptance(
     assert metadata.process.wait(timeout=5) == 0
 
 
+def test_first_sync_of_a_queued_step_does_not_kill_its_running_process(
+    mock_nemo_client, mock_jobs_client, tmp_path, mock_platform_config, test_step_pending
+):
+    """Time a step waited before it was scheduled is not charged to it once its process runs.
+
+    The step is still pending in the database at the first sync after ``schedule`` starts it, but
+    its process is running, so it is active: the before-active TTL no longer applies.
+    """
+    backend = _subprocess_backend(mock_nemo_client, tmp_path, mock_platform_config)
+    step = _step_with_command(test_step_pending, ["/bin/sh", "-c", "sleep 30"])
+    mock_jobs_client.list_job_step_tasks.return_value = data_response(SimpleNamespace(data=[]))
+    ttl_seconds = backend._execution_profile_config.ttl_seconds_before_active
+    old_timestamp = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds + 300)
+    step.created_at = old_timestamp
+    step.updated_at = old_timestamp
+    step.status = HelixJobStatus.CREATED
+    _schedule_without_otel_export(backend, step)
+    key = SubprocessProcessKey(step.workspace, step.job, str(step.attempt_id), step.name)
+    metadata = backend._process_registry.get(key)
+    assert metadata is not None
+    step.status = HelixJobStatus.PENDING
+    try:
+        update = backend.sync(step)
+
+        assert update.status == HelixJobStatus.ACTIVE
+        assert metadata.process.poll() is None
+    finally:
+        metadata.process.kill()
+        metadata.process.wait(timeout=5)
+
+
+def test_first_sync_of_a_queued_step_reports_its_finished_process(
+    mock_nemo_client, mock_jobs_client, tmp_path, mock_platform_config, test_step_pending
+):
+    """A queued step whose process finished before the first sync completes; it is not timed out."""
+    backend = _subprocess_backend(mock_nemo_client, tmp_path, mock_platform_config)
+    step = _step_with_command(test_step_pending, ["/bin/sh", "-c", "true"])
+    mock_jobs_client.list_job_step_tasks.return_value = data_response(SimpleNamespace(data=[]))
+    ttl_seconds = backend._execution_profile_config.ttl_seconds_before_active
+    old_timestamp = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds + 300)
+    step.created_at = old_timestamp
+    step.updated_at = old_timestamp
+    step.status = HelixJobStatus.CREATED
+    _schedule_without_otel_export(backend, step)
+    key = SubprocessProcessKey(step.workspace, step.job, str(step.attempt_id), step.name)
+    metadata = backend._process_registry.get(key)
+    assert metadata is not None
+    metadata.process.wait(timeout=5)
+    step.status = HelixJobStatus.PENDING
+
+    update = backend.sync(step)
+
+    assert update.status == HelixJobStatus.COMPLETED
+
+
 def test_subprocess_persistent_storage_is_shared_across_job_attempt(
     mock_nemo_client, tmp_path, mock_platform_config, test_step_pending
 ):
