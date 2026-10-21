@@ -4,6 +4,7 @@
 import logging
 import shutil
 import tempfile
+import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,10 +12,24 @@ from typing import Protocol
 
 import anyio
 from filesets import AsyncFilesetFileSystem, FilesetFileSystem, build_fileset_ref, parse_fileset_ref
+from nemo_helix_plugin.client.errors import InternalServerError, NemoTransportError, RateLimitError
 from nemo_helix_plugin.files.types import CreateFilesetRequest
 from nemo_helix_plugin.jobs.schemas import FileStorageType
 
 logger = logging.getLogger(__name__)
+
+# An upload streams a one-shot body, so once it is on the wire the typed client cannot
+# replay it and leaves the retry to a level that can rebuild the body from the source
+# file. These managers are that level for job results: each attempt calls put_file
+# again, which reopens the local file. The exceptions are what the typed client
+# raises for a transport failure (a timeout included), a 5xx and a 429.
+UPLOAD_ATTEMPTS = 3
+UPLOAD_BACKOFF_SECONDS = 2.0
+TRANSIENT_UPLOAD_ERRORS = (NemoTransportError, InternalServerError, RateLimitError)
+
+
+def _upload_backoff(attempt: int) -> float:
+    return UPLOAD_BACKOFF_SECONDS * (2**attempt)
 
 
 @dataclass
@@ -188,10 +203,23 @@ class FilesetFileManager(BaseFilesetFileManager):
             all_files = _list_local_files_sync(local_path)
             files_to_upload = _filter_files_by_patterns(all_files, ignore_patterns)
             for rel_path in files_to_upload:
-                self._fs.put_file(str(local_path / rel_path), f"{full_remote_path}/{rel_path}")
+                self._put_file(str(local_path / rel_path), f"{full_remote_path}/{rel_path}")
         else:
-            self._fs.put_file(str(local_path), full_remote_path)
+            self._put_file(str(local_path), full_remote_path)
         return self.url(remote_path)
+
+    def _put_file(self, lpath: str, rpath: str) -> None:
+        """Upload one file, retrying transient failures with a fresh body each time."""
+        for attempt in range(UPLOAD_ATTEMPTS):
+            try:
+                self._fs.put_file(lpath, rpath)
+                return
+            except TRANSIENT_UPLOAD_ERRORS as exc:
+                if attempt == UPLOAD_ATTEMPTS - 1:
+                    raise
+                backoff = _upload_backoff(attempt)
+                logger.warning(f"Upload of [{lpath}] failed ({exc}); retrying in {backoff:.0f}s")
+                time.sleep(backoff)
 
     def download_from_url(self, url: str, local_dir: str | Path | None = None) -> TmpDirPath:
         """Download from fileset:// URL."""
@@ -254,10 +282,23 @@ class AsyncFilesetFileManager(BaseFilesetFileManager):
             all_files = await _list_local_files(local_path)
             files_to_upload = _filter_files_by_patterns(all_files, ignore_patterns)
             for rel_path in files_to_upload:
-                await self._fs._put_file(str(local_path / rel_path), f"{full_remote_path}/{rel_path}")
+                await self._put_file(str(local_path / rel_path), f"{full_remote_path}/{rel_path}")
         else:
-            await self._fs._put_file(str(local_path), full_remote_path)
+            await self._put_file(str(local_path), full_remote_path)
         return self.url(remote_path)
+
+    async def _put_file(self, lpath: str, rpath: str) -> None:
+        """Upload one file, retrying transient failures with a fresh body each time."""
+        for attempt in range(UPLOAD_ATTEMPTS):
+            try:
+                await self._fs._put_file(lpath, rpath)
+                return
+            except TRANSIENT_UPLOAD_ERRORS as exc:
+                if attempt == UPLOAD_ATTEMPTS - 1:
+                    raise
+                backoff = _upload_backoff(attempt)
+                logger.warning(f"Upload of [{lpath}] failed ({exc}); retrying in {backoff:.0f}s")
+                await anyio.sleep(backoff)
 
     async def _download_from_url(self, url: str, local_dir: str | Path | None = None) -> TmpDirPath:
         """Download from fileset:// URL."""
